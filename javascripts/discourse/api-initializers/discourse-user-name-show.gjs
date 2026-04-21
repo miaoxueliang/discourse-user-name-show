@@ -2,14 +2,14 @@ import { apiInitializer } from "discourse/lib/api";
 import { ajax } from "discourse/lib/ajax";
 import I18n from "I18n";
 
-// 目标路径前缀列表（active / new / staff / suspended / silenced / staged）
+const LOG_PREFIX = "[eeo-user-name-show]";
+
+// 目标路径前缀列表（active / new / staff / suspended）
 const TARGET_PREFIXES = [
   "/admin/users/list/active",
   "/admin/users/list/new",
   "/admin/users/list/staff",
   "/admin/users/list/suspended",
-  "/admin/users/list/silenced",
-  "/admin/users/list/staged",
 ];
 
 // 用户名 → name 内存缓存，避免重复请求
@@ -22,9 +22,23 @@ const TABLE_SELECTOR = [
   ".admin-contents table",
 ].join(", ");
 
+function debugLog(...args) {
+  // 默认开启调试日志；localStorage.eeoUserNameShowDebug = "0" 可关闭
+  if (window.localStorage?.eeoUserNameShowDebug === "0") {
+    return;
+  }
+  // eslint-disable-next-line no-console
+  console.log(LOG_PREFIX, ...args);
+}
+
+function isTargetUrl(url) {
+  const u = String(url || "");
+  return TARGET_PREFIXES.some((prefix) => u.includes(prefix));
+}
+
 function isTargetPage() {
   const path = window.location.pathname;
-  return TARGET_PREFIXES.some((prefix) => path.startsWith(prefix));
+  return isTargetUrl(path);
 }
 
 /**
@@ -32,14 +46,19 @@ function isTargetPage() {
  */
 async function fetchUserName(username) {
   if (nameCache.has(username)) {
+    debugLog("cache hit", username, "=>", nameCache.get(username));
     return nameCache.get(username);
   }
+
   try {
+    debugLog("request /u/:username.json", username);
     const data = await ajax(`/u/${encodeURIComponent(username)}.json`);
     const name = data?.user?.name || "";
+    debugLog("request success", username, "=>", name || "(empty)");
     nameCache.set(username, name);
     return name;
-  } catch {
+  } catch (error) {
+    debugLog("request failed", username, error?.message || error);
     nameCache.set(username, "");
     return "";
   }
@@ -48,23 +67,61 @@ async function fetchUserName(username) {
 /**
  * 对单行 <tr> 注入 name 标签（幂等）
  */
+function findUserLinkInRow(row) {
+  return (
+    row.querySelector("a[data-user-card]") ||
+    row.querySelector("a[href*='/admin/users/']") ||
+    row.querySelector("a[href^='/u/']") ||
+    row.querySelector("a[href*='/u/']") ||
+    row.querySelector("td.username a") ||
+    row.querySelector("td:first-child a")
+  );
+}
+
 function findUsersTable() {
   const candidates = document.querySelectorAll(TABLE_SELECTOR);
+  debugLog("table candidates by selector:", candidates.length);
+
   for (const table of candidates) {
-    const hasBodyRows = table.querySelector("tbody tr");
-    if (hasBodyRows) {
+    const rows = table.querySelectorAll("tbody tr");
+    if (!rows.length) continue;
+
+    const hasUserLink = Array.from(rows).some((row) => !!findUserLinkInRow(row));
+    if (hasUserLink) {
+      debugLog("picked table by selector, rows:", rows.length);
       return table;
     }
   }
+
+  // 兜底：全页面扫描 table，找包含 /u/ 或 /admin/users/ 链接的表格
+  const allTables = document.querySelectorAll("table");
+  debugLog("fallback scanning all tables:", allTables.length);
+
+  for (const table of allTables) {
+    const rows = table.querySelectorAll("tbody tr");
+    if (!rows.length) continue;
+
+    const hasUserLink = Array.from(rows).some((row) => !!findUserLinkInRow(row));
+    if (hasUserLink) {
+      debugLog("picked table by fallback, rows:", rows.length);
+      return table;
+    }
+  }
+
+  debugLog("no users table found");
   return null;
 }
 
 function ensureNameHeader(table) {
   const headerRow = table.querySelector("thead tr");
-  if (!headerRow) return -1;
+  if (!headerRow) {
+    debugLog("header row not found");
+    return -1;
+  }
 
   const existed = headerRow.querySelector("th.eeo-name-col");
   if (existed) {
+    debugLog("header already exists");
     return Array.from(headerRow.children).indexOf(existed);
   }
 
@@ -73,17 +130,21 @@ function ensureNameHeader(table) {
     headerRow.querySelector("th:nth-child(2)") ||
     headerRow.children[1] ||
     headerRow.children[0];
-  if (!usernameHeader) return -1;
+  if (!usernameHeader) {
+    debugLog("username header not found");
+    return -1;
+  }
 
   const th = document.createElement("th");
   th.className = "eeo-name-col";
   th.textContent = I18n.t("user_name_show.name_label");
 
   usernameHeader.insertAdjacentElement("afterend", th);
+  debugLog("header inserted, title:", th.textContent);
   return Array.from(headerRow.children).indexOf(th);
 }
 
-function extractUsernameFromRow(row, link) {
+function extractUsernameFromLink(link) {
   const href = link.getAttribute("href") || "";
 
   // 1) /admin/users/123/username
@@ -116,14 +177,17 @@ function extractUsernameFromRow(row, link) {
 async function injectNameForRow(row) {
   if (row.dataset.nameInjected === "1") return;
 
-  // 兼容两种可能的列结构：带 class="username" 的 td，或第一个 td
-  const link =
-    row.querySelector("td.username a") ||
-    row.querySelector("td:first-child a");
-  if (!link) return;
+  const link = findUserLinkInRow(row);
+  if (!link) {
+    debugLog("row skipped: user link not found");
+    return;
+  }
 
-  const username = extractUsernameFromRow(row, link);
-  if (!username) return;
+  const username = extractUsernameFromLink(link);
+  if (!username) {
+    debugLog("row skipped: username parse failed, href:", link.getAttribute("href"));
+    return;
+  }
 
   const name = await fetchUserName(username);
 
@@ -138,6 +202,7 @@ async function injectNameForRow(row) {
     nameCell = document.createElement("td");
     nameCell.className = "eeo-name-col";
     usernameCell.insertAdjacentElement("afterend", nameCell);
+    debugLog("name cell inserted for", username);
   }
 
   let nameEl = nameCell.querySelector(".admin-user-real-name");
@@ -161,12 +226,18 @@ async function injectNameForRow(row) {
 function injectAllRows() {
   if (!isTargetPage()) return;
 
+  debugLog("injectAllRows start, pathname:", window.location.pathname);
+
   const table = findUsersTable();
-  if (!table) return;
+  if (!table) {
+    debugLog("injectAllRows abort: users table not found");
+    return;
+  }
 
   ensureNameHeader(table);
 
   const rows = table.querySelectorAll("tbody tr");
+  debugLog("rows found:", rows.length);
 
   rows.forEach((row) => injectNameForRow(row));
 }
@@ -188,13 +259,21 @@ function startObserver() {
   });
 
   observer.observe(document.body, { childList: true, subtree: true });
+  debugLog("mutation observer started");
   return observer;
 }
 
 export default apiInitializer("1.8.0", (api) => {
+  debugLog("initializer loaded", {
+    pathname: window.location.pathname,
+    href: window.location.href,
+  });
+
   // Ember 路由切换时触发
   api.onPageChange((url) => {
-    const isTarget = TARGET_PREFIXES.some((prefix) => url.startsWith(prefix));
+    const isTarget = isTargetUrl(url);
+    debugLog("onPageChange", { url, isTarget });
+
     if (isTarget) {
       // 等待 Ember 渲染完成后再注入
       setTimeout(injectAllRows, 350);
