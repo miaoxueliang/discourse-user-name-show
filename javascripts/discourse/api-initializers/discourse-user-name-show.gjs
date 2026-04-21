@@ -28,7 +28,7 @@ async function fetchUserName(username) {
     return nameCache.get(username);
   }
   try {
-    const data = await ajax(`/u/${username}.json`);
+    const data = await ajax(`/u/${encodeURIComponent(username)}.json`);
     const name = data?.user?.name || "";
     nameCache.set(username, name);
     return name;
@@ -41,9 +41,38 @@ async function fetchUserName(username) {
 /**
  * 对单行 <tr> 注入 name 标签（幂等）
  */
+function extractUsernameFromRow(row, link) {
+  const href = link.getAttribute("href") || "";
+
+  // 1) /admin/users/123/username
+  const adminMatch = href.match(/\/admin\/users\/\d+\/([^/?#]+)/);
+  if (adminMatch?.[1]) {
+    return adminMatch[1];
+  }
+
+  // 2) /u/username 或 /u/username/summary
+  const profileMatch = href.match(/\/u\/([^/?#]+)/);
+  if (profileMatch?.[1]) {
+    return profileMatch[1];
+  }
+
+  // 3) data-user-card 常见于用户名链接
+  const userCard = link.getAttribute("data-user-card");
+  if (userCard) {
+    return userCard;
+  }
+
+  // 4) 兜底：链接文本
+  const text = (link.textContent || "").trim();
+  if (text) {
+    return text;
+  }
+
+  return "";
+}
+
 async function injectNameForRow(row) {
-  if (row.dataset.nameInjected) return;
-  row.dataset.nameInjected = "1";
+  if (row.dataset.nameInjected === "1") return;
 
   // 兼容两种可能的列结构：带 class="username" 的 td，或第一个 td
   const link =
@@ -51,12 +80,9 @@ async function injectNameForRow(row) {
     row.querySelector("td:first-child a");
   if (!link) return;
 
-  // 从 href 提取用户名，例：/admin/users/123/eeo02529
-  const href = link.getAttribute("href") || "";
-  const match = href.match(/\/admin\/users\/\d+\/([^/?#]+)/);
-  if (!match) return;
+  const username = extractUsernameFromRow(row, link);
+  if (!username) return;
 
-  const username = match[1];
   const name = await fetchUserName(username);
 
   const td = link.closest("td");
@@ -71,6 +97,9 @@ async function injectNameForRow(row) {
     I18n.t("user_name_show.name_label") + ": " + displayName;
   nameEl.textContent = displayName;
   td.appendChild(nameEl);
+
+  // 仅在成功注入后标记，避免首轮渲染未完成导致永远不再重试
+  row.dataset.nameInjected = "1";
 }
 
 /**

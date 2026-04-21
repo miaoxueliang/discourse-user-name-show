@@ -1,6 +1,6 @@
 en:
   theme_metadata:
-    description: "【EEO】Show user real name in admin user list pages"
+    description: "【EEO】后台用户列表页显示用户真实姓名"
   user_name_show:
     name_label: "Name"
     no_name: "(no name)"
