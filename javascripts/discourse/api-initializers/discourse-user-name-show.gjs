@@ -14,6 +14,11 @@ const nameCache = new Map();
 // URLs already fetched to avoid duplicate requests
 const fetchedPages = new Set();
 
+// Active name filter term
+let activeNameFilter = "";
+// Reference to injected filter input (reset on page change)
+let filterInputEl = null;
+
 function debugLog(...args) {
   try {
     if (window.localStorage && window.localStorage.eeoUserNameShowDebug === "0") {
@@ -76,6 +81,47 @@ function ensureExtraStyles() {
       max-width: 220px;
       color: var(--primary-medium, #888);
     }
+
+    .eeo-name-filter-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: 8px;
+    }
+
+    .eeo-name-filter-input {
+      width: 150px;
+      height: 32px;
+      padding: 0 8px;
+      border: 1px solid var(--primary-low-mid, #ccc);
+      border-radius: 4px;
+      font-size: 0.875em;
+      background: var(--secondary, #fff);
+      color: var(--primary, #333);
+      vertical-align: middle;
+    }
+
+    .eeo-name-filter-input:focus {
+      outline: none;
+      border-color: var(--tertiary, #0076cc);
+      box-shadow: 0 0 0 2px rgba(0, 118, 204, 0.2);
+    }
+
+    .eeo-name-filter-clear {
+      cursor: pointer;
+      color: var(--primary-medium, #888);
+      font-size: 1.1em;
+      line-height: 1;
+      background: none;
+      border: none;
+      padding: 0 2px;
+      display: none;
+      vertical-align: middle;
+    }
+
+    .eeo-name-filter-clear.visible {
+      display: inline-block;
+    }
   `;
 
   document.head.appendChild(style);
@@ -97,6 +143,11 @@ function findUsersList() {
   return null;
 }
 
+/**
+ * Insert the "Name" column header at the same grid position as the name data cell.
+ * Data cells are inserted after the .username cell, so the header must also go
+ * after the username column header (found by matching cell index).
+ */
 function ensureNameHeader(listEl) {
   const header = listEl.querySelector(".directory-table__column-header-wrapper");
   if (!header) {
@@ -104,22 +155,36 @@ function ensureNameHeader(listEl) {
     return;
   }
 
-  if (header.querySelector(".directory-table__column-header.eeo-name-col-header")) {
+  if (header.querySelector(".eeo-name-col-header")) {
     return;
+  }
+
+  // Find the index of the .username cell in the first data row
+  let insertIndex = -1;
+  const firstRow = listEl.querySelector(".directory-table__row.user");
+  if (firstRow) {
+    const cells = Array.from(firstRow.children);
+    const usernameIdx = cells.findIndex((c) => c.classList.contains("username"));
+    if (usernameIdx >= 0) {
+      // Name data goes after username → header must also go after username header
+      insertIndex = usernameIdx + 1;
+    }
   }
 
   const col = document.createElement("div");
   col.className = "directory-table__column-header eeo-name-col-header";
   col.textContent = tNameLabel();
 
-  const lastCol = header.lastElementChild;
-  if (lastCol) {
-    header.insertBefore(col, lastCol);
+  const headerCols = Array.from(header.children);
+  if (insertIndex >= 0 && insertIndex <= headerCols.length) {
+    header.insertBefore(col, headerCols[insertIndex] || null);
   } else {
-    header.appendChild(col);
+    // Fallback: insert before last column
+    const lastCol = header.lastElementChild;
+    header.insertBefore(col, lastCol || null);
   }
 
-  debugLog("header inserted", col.textContent);
+  debugLog("header inserted", col.textContent, "at index", insertIndex);
 }
 
 function ensureGridColumns(listEl) {
@@ -137,6 +202,112 @@ function ensureGridColumns(listEl) {
   listEl.style.gridTemplateColumns = newTemplate;
   listEl.dataset.eeoColAdded = "1";
   debugLog("grid template appended:", newTemplate);
+}
+
+/**
+ * Filter visible rows by name (and username) — pure client-side, no extra requests.
+ * Call after injectAllRows so nameCache is populated.
+ */
+function applyNameFilter(term, listEl) {
+  if (!listEl) {
+    return;
+  }
+
+  const rows = listEl.querySelectorAll(".directory-table__row.user");
+  const lowerTerm = term.toLowerCase();
+
+  rows.forEach((row) => {
+    if (!term) {
+      row.style.display = "";
+      return;
+    }
+
+    const userId = row.getAttribute("data-user-id");
+    const name = (nameCache.get(userId) || "").toLowerCase();
+
+    // Also match against the username shown in the row
+    const usernameLink = row.querySelector(".directory-table__cell.username a");
+    const username = usernameLink ? usernameLink.textContent.trim().toLowerCase() : "";
+
+    row.style.display = name.includes(lowerTerm) || username.includes(lowerTerm) ? "" : "none";
+  });
+}
+
+/**
+ * Inject a "Filter by name" input next to the existing username/email search box.
+ * Only injected once per page view; re-created after page navigation.
+ */
+function ensureNameFilter() {
+  // If already injected and still in DOM, skip
+  if (filterInputEl && document.contains(filterInputEl)) {
+    return;
+  }
+
+  // Find the existing Discourse filter input
+  const existingInput = document.querySelector(
+    ".users-list-container input[type='text']"
+  );
+  if (!existingInput) {
+    debugLog("existing filter input not found, skip name filter injection");
+    return;
+  }
+
+  // Don't inject twice
+  const existingWrap = document.querySelector(".eeo-name-filter-wrap");
+  if (existingWrap) {
+    existingWrap.remove();
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "eeo-name-filter-wrap";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "eeo-name-filter-input";
+  const lang = (document.documentElement.lang || "").toLowerCase();
+  input.placeholder = lang.startsWith("zh") ? "按姓名筛选..." : "Filter by name...";
+  input.value = activeNameFilter;
+  filterInputEl = input;
+
+  const clearBtn = document.createElement("button");
+  clearBtn.className = "eeo-name-filter-clear" + (activeNameFilter ? " visible" : "");
+  clearBtn.textContent = "×";
+  clearBtn.title = lang.startsWith("zh") ? "清除姓名筛选" : "Clear name filter";
+  clearBtn.setAttribute("type", "button");
+
+  wrap.appendChild(input);
+  wrap.appendChild(clearBtn);
+
+  // Insert right after the existing filter input's parent container
+  const parentEl = existingInput.parentElement;
+  if (parentEl) {
+    parentEl.insertAdjacentElement("afterend", wrap);
+  } else {
+    existingInput.insertAdjacentElement("afterend", wrap);
+  }
+
+  let filterTimer = null;
+
+  input.addEventListener("input", () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => {
+      activeNameFilter = input.value.trim();
+      clearBtn.classList.toggle("visible", !!activeNameFilter);
+      const listEl = findUsersList();
+      applyNameFilter(activeNameFilter, listEl);
+      debugLog("name filter applied:", activeNameFilter);
+    }, 200);
+  });
+
+  clearBtn.addEventListener("click", () => {
+    input.value = "";
+    activeNameFilter = "";
+    clearBtn.classList.remove("visible");
+    const listEl = findUsersList();
+    applyNameFilter("", listEl);
+  });
+
+  debugLog("name filter input injected");
 }
 
 /**
@@ -202,16 +373,16 @@ function injectNameForRow(row) {
     usernameCell.insertAdjacentElement("afterend", nameCell);
   }
 
+  // Read from cache; if not yet loaded, leave empty (next mutation will repopulate)
+  if (!nameCache.has(userId)) {
+    return;
+  }
+
   let valueEl = nameCell.querySelector(".directory-table__value.admin-user-real-name");
   if (!valueEl) {
     valueEl = document.createElement("span");
     valueEl.className = "directory-table__value admin-user-real-name";
     nameCell.appendChild(valueEl);
-  }
-
-  // Read from cache; if not yet loaded, leave empty (next mutation will repopulate)
-  if (!nameCache.has(userId)) {
-    return;
   }
 
   const name = nameCache.get(userId);
@@ -236,6 +407,7 @@ async function injectAllRows() {
   ensureExtraStyles();
   ensureNameHeader(listEl);
   ensureGridColumns(listEl);
+  ensureNameFilter();
 
   // One request for all users on this page — no per-user requests
   await fetchNamesForCurrentPage();
@@ -243,6 +415,11 @@ async function injectAllRows() {
   const rows = listEl.querySelectorAll(".directory-table__row.user");
   debugLog("rows found:", rows.length);
   rows.forEach((row) => injectNameForRow(row));
+
+  // Re-apply active name filter after names are injected
+  if (activeNameFilter) {
+    applyNameFilter(activeNameFilter, listEl);
+  }
 }
 
 function startObserver() {
@@ -277,6 +454,8 @@ export default apiInitializer("1.8.0", (api) => {
     debugLog("onPageChange", { url, isTarget });
 
     if (isTarget) {
+      // Reset filter input ref so it gets re-injected for the new page
+      filterInputEl = null;
       setTimeout(injectAllRows, 300);
     }
   });
