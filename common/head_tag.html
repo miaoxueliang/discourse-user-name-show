@@ -1,0 +1,197 @@
+<script type="text/discourse-plugin" version="1.8.0">
+(function () {
+  const LOG_PREFIX = "[eeo-user-name-show-head]";
+
+  if (window.__eeoUserNameShowHeadInit) {
+    return;
+  }
+  window.__eeoUserNameShowHeadInit = true;
+
+  function log() {
+    try {
+      if (window.localStorage && window.localStorage.eeoUserNameShowDebug === "0") {
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.log.apply(console, [LOG_PREFIX].concat(Array.from(arguments)));
+    } catch (e) {
+      // ignore logging failure
+    }
+  }
+
+  const TARGET_PREFIXES = [
+    "/admin/users/list/active",
+    "/admin/users/list/new",
+    "/admin/users/list/staff",
+    "/admin/users/list/suspended"
+  ];
+
+  const nameCache = Object.create(null);
+
+  function isTargetPage() {
+    const path = window.location.pathname || "";
+    return TARGET_PREFIXES.some((p) => path.indexOf(p) !== -1);
+  }
+
+  function findUserLink(row) {
+    return (
+      row.querySelector("a[data-user-card]") ||
+      row.querySelector("a[href*='/admin/users/']") ||
+      row.querySelector("a[href^='/u/']") ||
+      row.querySelector("a[href*='/u/']") ||
+      row.querySelector("td.username a") ||
+      row.querySelector("td:first-child a")
+    );
+  }
+
+  function extractUsername(link) {
+    const href = link.getAttribute("href") || "";
+    let m = href.match(/\/admin\/users\/\d+\/([^/?#]+)/);
+    if (m && m[1]) return m[1];
+
+    m = href.match(/\/u\/([^/?#]+)/);
+    if (m && m[1]) return m[1];
+
+    const card = link.getAttribute("data-user-card");
+    if (card) return card;
+
+    const txt = (link.textContent || "").trim();
+    return txt || "";
+  }
+
+  async function fetchName(username) {
+    if (Object.prototype.hasOwnProperty.call(nameCache, username)) {
+      return nameCache[username];
+    }
+
+    try {
+      const res = await fetch("/u/" + encodeURIComponent(username) + ".json", {
+        credentials: "same-origin"
+      });
+      if (!res.ok) {
+        log("request failed", username, res.status);
+        nameCache[username] = "";
+        return "";
+      }
+
+      const data = await res.json();
+      const name = (data && data.user && data.user.name) || "";
+      nameCache[username] = name;
+      return name;
+    } catch (e) {
+      log("request error", username, e && e.message ? e.message : e);
+      nameCache[username] = "";
+      return "";
+    }
+  }
+
+  function findUsersTable() {
+    const selectors = [
+      ".admin-users-list table",
+      ".users-list-container table",
+      "table.admin-list",
+      ".admin-contents table",
+      "table"
+    ];
+
+    for (const sel of selectors) {
+      const tables = document.querySelectorAll(sel);
+      for (const table of tables) {
+        const rows = table.querySelectorAll("tbody tr");
+        if (!rows.length) continue;
+        const hasUserLink = Array.from(rows).some((r) => !!findUserLink(r));
+        if (hasUserLink) {
+          return table;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function ensureHeader(table) {
+    const tr = table.querySelector("thead tr");
+    if (!tr) return;
+
+    if (tr.querySelector("th.eeo-name-col")) return;
+
+    const usernameTh =
+      tr.querySelector("th.username") ||
+      tr.querySelector("th:nth-child(2)") ||
+      tr.children[1] ||
+      tr.children[0];
+
+    if (!usernameTh) return;
+
+    const th = document.createElement("th");
+    th.className = "eeo-name-col";
+    th.textContent = "Name";
+    usernameTh.insertAdjacentElement("afterend", th);
+    log("header inserted");
+  }
+
+  async function injectRow(row) {
+    const link = findUserLink(row);
+    if (!link) return;
+
+    const username = extractUsername(link);
+    if (!username) return;
+
+    const name = await fetchName(username);
+    const shown = name || "(no name)";
+
+    let nameTd = row.querySelector("td.eeo-name-col");
+    if (!nameTd) {
+      const usernameTd = link.closest("td");
+      if (!usernameTd) return;
+      nameTd = document.createElement("td");
+      nameTd.className = "eeo-name-col";
+      usernameTd.insertAdjacentElement("afterend", nameTd);
+    }
+
+    nameTd.textContent = shown;
+  }
+
+  async function run() {
+    if (!isTargetPage()) return;
+
+    const table = findUsersTable();
+    if (!table) {
+      log("table not found", window.location.pathname);
+      return;
+    }
+
+    ensureHeader(table);
+
+    const rows = table.querySelectorAll("tbody tr");
+    log("run rows", rows.length, window.location.pathname);
+
+    for (const row of rows) {
+      await injectRow(row);
+    }
+  }
+
+  let timer = null;
+  function scheduleRun(delay) {
+    clearTimeout(timer);
+    timer = setTimeout(run, delay);
+  }
+
+  const observer = new MutationObserver(function (mutations) {
+    if (!isTargetPage()) return;
+    const changed = mutations.some((m) => m.addedNodes && m.addedNodes.length > 0);
+    if (changed) {
+      scheduleRun(120);
+    }
+  });
+
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  window.addEventListener("popstate", function () {
+    scheduleRun(200);
+  });
+
+  log("head script loaded", window.location.pathname);
+  scheduleRun(300);
+})();
+</script>
