@@ -13,14 +13,7 @@ const TARGET_PREFIXES = [
 ];
 
 // 用户名 → name 内存缓存，避免重复请求
-const nameCache = new Map();
-
-const TABLE_SELECTOR = [
-  ".admin-users-list table",
-  ".users-list-container table",
-  "table.admin-list",
-  ".admin-contents table",
-].join(", ");
+const nameCache = new Map(); // userId -> name
 
 function debugLog(...args) {
   // 默认开启调试日志；localStorage.eeoUserNameShowDebug = "0" 可关闭
@@ -54,143 +47,154 @@ async function fetchUserName(username) {
     debugLog("request /u/:username.json", username);
     const data = await ajax(`/u/${encodeURIComponent(username)}.json`);
     const name = data?.user?.name || "";
-    debugLog("request success", username, "=>", name || "(empty)");
+     * 对应 Discourse 2026.3 的 admin users 响应式列表结构：
+     * .users-list (grid) -> .directory-table__column-header-wrapper + .directory-table__row
     nameCache.set(username, name);
-    return name;
-  } catch (error) {
-    debugLog("request failed", username, error?.message || error);
-    nameCache.set(username, "");
-    return "";
-  }
-}
+    function findUsersList() {
+      const candidates = document.querySelectorAll(".users-list-container .users-list");
+      debugLog("users-list candidates:", candidates.length);
 
-/**
+      for (const listEl of candidates) {
+        const rows = listEl.querySelectorAll(".directory-table__row.user");
+        if (rows.length > 0) {
+          debugLog("picked users-list, rows:", rows.length);
+          return listEl;
+        }
+      }
+
+      debugLog("no users-list found");
+      return null;
  * 对单行 <tr> 注入 name 标签（幂等）
  */
-function findUserLinkInRow(row) {
-  return (
-    row.querySelector("a[data-user-card]") ||
-    row.querySelector("a[href*='/admin/users/']") ||
-    row.querySelector("a[href^='/u/']") ||
-    row.querySelector("a[href*='/u/']") ||
-    row.querySelector("td.username a") ||
-    row.querySelector("td:first-child a")
-  );
-}
+    function ensureExtraStyles() {
+      if (document.getElementById("eeo-user-name-show-style")) return;
 
-function findUsersTable() {
-  const candidates = document.querySelectorAll(TABLE_SELECTOR);
-  debugLog("table candidates by selector:", candidates.length);
+      const style = document.createElement("style");
+      style.id = "eeo-user-name-show-style";
+      style.textContent = `
+        .users-list .directory-table__column-header.eeo-name-col-header {
+          min-width: 120px;
+        }
 
-  for (const table of candidates) {
-    const rows = table.querySelectorAll("tbody tr");
+        .users-list .directory-table__cell.eeo-name-col {
+          justify-content: start;
+        }
+
+        .users-list .directory-table__cell.eeo-name-col .directory-table__value {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 220px;
+          color: var(--primary-medium, #888);
+        }
+      `;
+
+      document.head.appendChild(style);
     if (!rows.length) continue;
 
-    const hasUserLink = Array.from(rows).some((row) => !!findUserLinkInRow(row));
-    if (hasUserLink) {
-      debugLog("picked table by selector, rows:", rows.length);
-      return table;
-    }
-  }
+    function ensureNameHeader(listEl) {
+      const header = listEl.querySelector(".directory-table__column-header-wrapper");
+      if (!header) {
+        debugLog("header wrapper not found");
+        return;
+      }
 
-  // 兜底：全页面扫描 table，找包含 /u/ 或 /admin/users/ 链接的表格
-  const allTables = document.querySelectorAll("table");
-  debugLog("fallback scanning all tables:", allTables.length);
-
-  for (const table of allTables) {
-    const rows = table.querySelectorAll("tbody tr");
-    if (!rows.length) continue;
-
-    const hasUserLink = Array.from(rows).some((row) => !!findUserLinkInRow(row));
-    if (hasUserLink) {
-      debugLog("picked table by fallback, rows:", rows.length);
-      return table;
-    }
-  }
-
-  debugLog("no users table found");
+      const existed = header.querySelector(".directory-table__column-header.eeo-name-col-header");
   return null;
 }
-
+        return;
 function ensureNameHeader(table) {
   const headerRow = table.querySelector("thead tr");
-  if (!headerRow) {
-    debugLog("header row not found");
-    return -1;
-  }
+      const label = I18n.t("user_name_show.name_label");
+      const col = document.createElement("div");
+      col.className = "directory-table__column-header eeo-name-col-header";
+      col.textContent = label;
 
-  const existed = headerRow.querySelector("th.eeo-name-col");
-  if (existed) {
-    debugLog("header already exists");
+      // 末列是状态图标列（空标题），将 Name 插在它之前
+      const lastCol = header.lastElementChild;
+      if (lastCol) {
+        header.insertBefore(col, lastCol);
+      } else {
+        header.appendChild(col);
     return Array.from(headerRow.children).indexOf(existed);
+
+      debugLog("header inserted, title:", label);
+    }
+
+    function ensureGridColumns(listEl) {
+      const header = listEl.querySelector(".directory-table__column-header-wrapper");
+      if (!header) return;
+
+      const colCount = header.children.length;
+      if (!colCount) return;
+
+      // 首列 username 更宽，后续列等宽。colCount 包含首列。
+      const template = `minmax(min-content, 2fr) repeat(${Math.max(colCount - 1, 1)}, minmax(min-content, 1fr))`;
+      listEl.style.gridTemplateColumns = template;
+      debugLog("grid template applied:", template);
   }
 
-  const usernameHeader =
-    headerRow.querySelector("th.username") ||
-    headerRow.querySelector("th:nth-child(2)") ||
-    headerRow.children[1] ||
-    headerRow.children[0];
-  if (!usernameHeader) {
-    debugLog("username header not found");
-    return -1;
-  }
+    async function fetchNameByUserId(userId) {
+      if (nameCache.has(userId)) {
+        debugLog("cache hit by userId", userId, "=>", nameCache.get(userId));
+        return nameCache.get(userId);
+      }
 
-  const th = document.createElement("th");
-  th.className = "eeo-name-col";
-  th.textContent = I18n.t("user_name_show.name_label");
-
-  usernameHeader.insertAdjacentElement("afterend", th);
-  debugLog("header inserted, title:", th.textContent);
-  return Array.from(headerRow.children).indexOf(th);
-}
-
-function extractUsernameFromLink(link) {
-  const href = link.getAttribute("href") || "";
-
-  // 1) /admin/users/123/username
-  const adminMatch = href.match(/\/admin\/users\/\d+\/([^/?#]+)/);
-  if (adminMatch?.[1]) {
-    return adminMatch[1];
-  }
-
+      try {
+        debugLog("request /admin/users/:id.json", userId);
+        const data = await ajax(`/admin/users/${userId}.json`);
+        const name = data?.name || data?.user?.name || "";
+        nameCache.set(userId, name);
+        return name;
+      } catch (error) {
+        debugLog("request failed by userId", userId, error?.message || error);
+        nameCache.set(userId, "");
+        return "";
+      }
   // 2) /u/username 或 /u/username/summary
   const profileMatch = href.match(/\/u\/([^/?#]+)/);
   if (profileMatch?.[1]) {
     return profileMatch[1];
-  }
 
-  // 3) data-user-card 常见于用户名链接
-  const userCard = link.getAttribute("data-user-card");
-  if (userCard) {
-    return userCard;
-  }
-
-  // 4) 兜底：链接文本
-  const text = (link.textContent || "").trim();
+      const userId = row.dataset.userId;
+      if (!userId) {
+        debugLog("row skipped: user id not found");
   if (text) {
     return text;
   }
-
+      const name = await fetchNameByUserId(userId);
   return "";
 }
 
 async function injectNameForRow(row) {
-  if (row.dataset.nameInjected === "1") return;
+      let nameCell = row.querySelector(".directory-table__cell.eeo-name-col");
 
-  const link = findUserLinkInRow(row);
-  if (!link) {
+        const usernameCell = row.querySelector(".directory-table__cell.username");
+        if (!usernameCell) {
+          debugLog("row skipped: username cell not found", userId);
+          return;
+        }
     debugLog("row skipped: user link not found");
-    return;
-  }
+        nameCell = document.createElement("div");
+        nameCell.className = "directory-table__cell eeo-name-col";
+        const label = document.createElement("span");
+        label.className = "directory-table__label";
+        label.innerHTML = `<span>${I18n.t("user_name_show.name_label")}</span>`;
+        nameCell.appendChild(label);
 
-  const username = extractUsernameFromLink(link);
+        const value = document.createElement("span");
+        value.className = "directory-table__value admin-user-real-name";
+        nameCell.appendChild(value);
+
+
+        debugLog("name cell inserted for userId", userId);
   if (!username) {
     debugLog("row skipped: username parse failed, href:", link.getAttribute("href"));
-    return;
-  }
-
-  const name = await fetchUserName(username);
-
+      let nameEl = nameCell.querySelector(".directory-table__value.admin-user-real-name");
+      if (!nameEl) {
+        nameEl = document.createElement("span");
+        nameEl.className = "directory-table__value admin-user-real-name";
+        nameCell.appendChild(nameEl);
   const noName = I18n.t("user_name_show.no_name");
   const displayName = name || noName;
 
@@ -228,15 +232,17 @@ function injectAllRows() {
 
   debugLog("injectAllRows start, pathname:", window.location.pathname);
 
-  const table = findUsersTable();
-  if (!table) {
-    debugLog("injectAllRows abort: users table not found");
+  const listEl = findUsersList();
+  if (!listEl) {
+    debugLog("injectAllRows abort: users-list not found");
     return;
   }
 
-  ensureNameHeader(table);
+  ensureExtraStyles();
+  ensureNameHeader(listEl);
+  ensureGridColumns(listEl);
 
-  const rows = table.querySelectorAll("tbody tr");
+  const rows = listEl.querySelectorAll(".directory-table__row.user");
   debugLog("rows found:", rows.length);
 
   rows.forEach((row) => injectNameForRow(row));
