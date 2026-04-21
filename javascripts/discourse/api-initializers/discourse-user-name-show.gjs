@@ -15,6 +15,13 @@ const TARGET_PREFIXES = [
 // 用户名 → name 内存缓存，避免重复请求
 const nameCache = new Map();
 
+const TABLE_SELECTOR = [
+  ".admin-users-list table",
+  ".users-list-container table",
+  "table.admin-list",
+  ".admin-contents table",
+].join(", ");
+
 function isTargetPage() {
   const path = window.location.pathname;
   return TARGET_PREFIXES.some((prefix) => path.startsWith(prefix));
@@ -41,6 +48,41 @@ async function fetchUserName(username) {
 /**
  * 对单行 <tr> 注入 name 标签（幂等）
  */
+function findUsersTable() {
+  const candidates = document.querySelectorAll(TABLE_SELECTOR);
+  for (const table of candidates) {
+    const hasBodyRows = table.querySelector("tbody tr");
+    if (hasBodyRows) {
+      return table;
+    }
+  }
+  return null;
+}
+
+function ensureNameHeader(table) {
+  const headerRow = table.querySelector("thead tr");
+  if (!headerRow) return -1;
+
+  const existed = headerRow.querySelector("th.eeo-name-col");
+  if (existed) {
+    return Array.from(headerRow.children).indexOf(existed);
+  }
+
+  const usernameHeader =
+    headerRow.querySelector("th.username") ||
+    headerRow.querySelector("th:nth-child(2)") ||
+    headerRow.children[1] ||
+    headerRow.children[0];
+  if (!usernameHeader) return -1;
+
+  const th = document.createElement("th");
+  th.className = "eeo-name-col";
+  th.textContent = I18n.t("user_name_show.name_label");
+
+  usernameHeader.insertAdjacentElement("afterend", th);
+  return Array.from(headerRow.children).indexOf(th);
+}
+
 function extractUsernameFromRow(row, link) {
   const href = link.getAttribute("href") || "";
 
@@ -85,18 +127,29 @@ async function injectNameForRow(row) {
 
   const name = await fetchUserName(username);
 
-  const td = link.closest("td");
-  if (!td || td.querySelector(".admin-user-real-name")) return;
-
   const noName = I18n.t("user_name_show.no_name");
   const displayName = name || noName;
 
-  const nameEl = document.createElement("div");
-  nameEl.className = "admin-user-real-name";
+  let nameCell = row.querySelector("td.eeo-name-col");
+  if (!nameCell) {
+    const usernameCell = link.closest("td");
+    if (!usernameCell) return;
+
+    nameCell = document.createElement("td");
+    nameCell.className = "eeo-name-col";
+    usernameCell.insertAdjacentElement("afterend", nameCell);
+  }
+
+  let nameEl = nameCell.querySelector(".admin-user-real-name");
+  if (!nameEl) {
+    nameEl = document.createElement("span");
+    nameEl.className = "admin-user-real-name";
+    nameCell.appendChild(nameEl);
+  }
+
   nameEl.title =
     I18n.t("user_name_show.name_label") + ": " + displayName;
   nameEl.textContent = displayName;
-  td.appendChild(nameEl);
 
   // 仅在成功注入后标记，避免首轮渲染未完成导致永远不再重试
   row.dataset.nameInjected = "1";
@@ -108,14 +161,12 @@ async function injectNameForRow(row) {
 function injectAllRows() {
   if (!isTargetPage()) return;
 
-  // Discourse 后台用户列表常见选择器
-  const rows = document.querySelectorAll(
-    [
-      ".admin-users-list table tbody tr",
-      ".users-list-container table tbody tr",
-      "table.admin-list tbody tr",
-    ].join(", ")
-  );
+  const table = findUsersTable();
+  if (!table) return;
+
+  ensureNameHeader(table);
+
+  const rows = table.querySelectorAll("tbody tr");
 
   rows.forEach((row) => injectNameForRow(row));
 }
