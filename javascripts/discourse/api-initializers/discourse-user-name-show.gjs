@@ -1,6 +1,5 @@
 ﻿import { apiInitializer } from "discourse/lib/api";
 import { ajax } from "discourse/lib/ajax";
-import { i18n } from "discourse-i18n";
 
 const LOG_PREFIX = "[eeo-user-name-show]";
 const TARGET_PREFIXES = [
@@ -10,7 +9,10 @@ const TARGET_PREFIXES = [
   "/admin/users/list/suspended",
 ];
 
+// userId (string) -> name (string)
 const nameCache = new Map();
+// URLs already fetched to avoid duplicate requests
+const fetchedPages = new Set();
 
 function debugLog(...args) {
   try {
@@ -20,7 +22,6 @@ function debugLog(...args) {
   } catch (e) {
     // ignore
   }
-
   // eslint-disable-next-line no-console
   console.log(LOG_PREFIX, ...args);
 }
@@ -49,14 +50,6 @@ function tNoName() {
     return lang.startsWith("zh") ? "（未设置）" : "(no name)";
   } catch (e) {
     return "(no name)";
-  }
-}
-
-function tI18n(key) {
-  try {
-    return i18n(key);
-  } catch (e) {
-    return null;
   }
 }
 
@@ -130,19 +123,13 @@ function ensureNameHeader(listEl) {
 }
 
 function ensureGridColumns(listEl) {
-  // 读取 Discourse 已设定的 grid 模板，在末尾追加一列，而非整体替换
-  const existing = listEl.style.gridTemplateColumns || "";
-  if (!existing) {
-    debugLog("grid template: no existing style, skip");
+  if (listEl.dataset.eeoColAdded) {
     return;
   }
 
-  if (existing.indexOf("eeo-added") !== -1) {
-    return; // 已追加过
-  }
-
-  // 追加一列 minmax(120px, 1fr)，并打上标记（写入 dataset 避免字符串污染）
-  if (listEl.dataset.eeoColAdded) {
+  const existing = listEl.style.gridTemplateColumns || "";
+  if (!existing) {
+    debugLog("grid template: no existing style, skip");
     return;
   }
 
@@ -152,25 +139,40 @@ function ensureGridColumns(listEl) {
   debugLog("grid template appended:", newTemplate);
 }
 
-async function fetchNameByUserId(userId) {
-  if (nameCache.has(userId)) {
-    return nameCache.get(userId);
+/**
+ * Fetch all user names for the current page in a single request.
+ * Uses the same list endpoint Discourse already calls, just adds .json suffix.
+ * Results are cached by URL to avoid duplicate requests.
+ */
+async function fetchNamesForCurrentPage() {
+  const url = window.location.pathname + ".json" + window.location.search;
+
+  if (fetchedPages.has(url)) {
+    return;
   }
 
+  // Mark as fetching immediately to prevent concurrent duplicate requests
+  fetchedPages.add(url);
+
   try {
-    debugLog("request /admin/users/:id.json", userId);
-    const data = await ajax(`/admin/users/${encodeURIComponent(userId)}.json`);
-    const name = (data && (data.name || (data.user && data.user.name))) || "";
-    nameCache.set(userId, name);
-    return name;
+    debugLog("fetch list api", url);
+    const users = await ajax(url);
+    if (Array.isArray(users)) {
+      users.forEach((u) => {
+        if (u.id != null) {
+          nameCache.set(String(u.id), u.name || "");
+        }
+      });
+      debugLog("name cache loaded", users.length, "users");
+    }
   } catch (error) {
-    debugLog("request failed", userId, error && error.message ? error.message : error);
-    nameCache.set(userId, "");
-    return "";
+    // Remove from set so a retry is possible on next mutation
+    fetchedPages.delete(url);
+    debugLog("fetch list failed", error && error.message ? error.message : error);
   }
 }
 
-async function injectNameForRow(row) {
+function injectNameForRow(row) {
   const userId = row.getAttribute("data-user-id");
   if (!userId) {
     return;
@@ -207,14 +209,18 @@ async function injectNameForRow(row) {
     nameCell.appendChild(valueEl);
   }
 
-  const name = await fetchNameByUserId(userId);
-  const displayName = name || tNoName();
+  // Read from cache; if not yet loaded, leave empty (next mutation will repopulate)
+  if (!nameCache.has(userId)) {
+    return;
+  }
 
+  const name = nameCache.get(userId);
+  const displayName = name || tNoName();
   valueEl.textContent = displayName;
   valueEl.title = `${tNameLabel()}: ${displayName}`;
 }
 
-function injectAllRows() {
+async function injectAllRows() {
   if (!isTargetPage()) {
     return;
   }
@@ -230,6 +236,9 @@ function injectAllRows() {
   ensureExtraStyles();
   ensureNameHeader(listEl);
   ensureGridColumns(listEl);
+
+  // One request for all users on this page — no per-user requests
+  await fetchNamesForCurrentPage();
 
   const rows = listEl.querySelectorAll(".directory-table__row.user");
   debugLog("rows found:", rows.length);
