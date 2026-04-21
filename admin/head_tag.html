@@ -1,21 +1,20 @@
-<script type="text/discourse-plugin" version="1.8.0">
+<script>
 (function () {
-  const LOG_PREFIX = "[eeo-user-name-show-head]";
+  const LOG_PREFIX = "[eeo-user-name-show-admin]";
 
-  if (window.__eeoUserNameShowHeadInit) {
+  if (window.__eeoUserNameShowAdminInit) {
     return;
   }
-  window.__eeoUserNameShowHeadInit = true;
+  window.__eeoUserNameShowAdminInit = true;
 
   function log() {
     try {
       if (window.localStorage && window.localStorage.eeoUserNameShowDebug === "0") {
         return;
       }
-      // eslint-disable-next-line no-console
       console.log.apply(console, [LOG_PREFIX].concat(Array.from(arguments)));
     } catch (e) {
-      // ignore logging failure
+      // ignore
     }
   }
 
@@ -33,6 +32,32 @@
     return TARGET_PREFIXES.some((p) => path.indexOf(p) !== -1);
   }
 
+  function tNameLabel() {
+    try {
+      if (window.I18n && typeof window.I18n.t === "function") {
+        return window.I18n.t("user_name_show.name_label") || "Name";
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    const lang = (document.documentElement.lang || "").toLowerCase();
+    return lang.startsWith("zh") ? "姓名" : "Name";
+  }
+
+  function tNoName() {
+    try {
+      if (window.I18n && typeof window.I18n.t === "function") {
+        return window.I18n.t("user_name_show.no_name") || "(no name)";
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    const lang = (document.documentElement.lang || "").toLowerCase();
+    return lang.startsWith("zh") ? "（未设置）" : "(no name)";
+  }
+
   function findUserLink(row) {
     return (
       row.querySelector("a[data-user-card]") ||
@@ -46,6 +71,7 @@
 
   function extractUsername(link) {
     const href = link.getAttribute("href") || "";
+
     let m = href.match(/\/admin\/users\/\d+\/([^/?#]+)/);
     if (m && m[1]) return m[1];
 
@@ -55,8 +81,8 @@
     const card = link.getAttribute("data-user-card");
     if (card) return card;
 
-    const txt = (link.textContent || "").trim();
-    return txt || "";
+    const text = (link.textContent || "").trim();
+    return text || "";
   }
 
   async function fetchName(username) {
@@ -68,6 +94,7 @@
       const res = await fetch("/u/" + encodeURIComponent(username) + ".json", {
         credentials: "same-origin"
       });
+
       if (!res.ok) {
         log("request failed", username, res.status);
         nameCache[username] = "";
@@ -99,6 +126,7 @@
       for (const table of tables) {
         const rows = table.querySelectorAll("tbody tr");
         if (!rows.length) continue;
+
         const hasUserLink = Array.from(rows).some((r) => !!findUserLink(r));
         if (hasUserLink) {
           return table;
@@ -111,9 +139,14 @@
 
   function ensureHeader(table) {
     const tr = table.querySelector("thead tr");
-    if (!tr) return;
+    if (!tr) {
+      log("header row missing");
+      return;
+    }
 
-    if (tr.querySelector("th.eeo-name-col")) return;
+    if (tr.querySelector("th.eeo-name-col")) {
+      return;
+    }
 
     const usernameTh =
       tr.querySelector("th.username") ||
@@ -121,13 +154,16 @@
       tr.children[1] ||
       tr.children[0];
 
-    if (!usernameTh) return;
+    if (!usernameTh) {
+      log("username header missing");
+      return;
+    }
 
     const th = document.createElement("th");
     th.className = "eeo-name-col";
-    th.textContent = "Name";
+    th.textContent = tNameLabel();
     usernameTh.insertAdjacentElement("afterend", th);
-    log("header inserted");
+    log("header inserted", th.textContent);
   }
 
   async function injectRow(row) {
@@ -138,12 +174,13 @@
     if (!username) return;
 
     const name = await fetchName(username);
-    const shown = name || "(no name)";
+    const shown = name || tNoName();
 
     let nameTd = row.querySelector("td.eeo-name-col");
     if (!nameTd) {
       const usernameTd = link.closest("td");
       if (!usernameTd) return;
+
       nameTd = document.createElement("td");
       nameTd.className = "eeo-name-col";
       usernameTd.insertAdjacentElement("afterend", nameTd);
@@ -157,14 +194,14 @@
 
     const table = findUsersTable();
     if (!table) {
-      log("table not found", window.location.pathname);
+      log("users table not found", window.location.pathname);
       return;
     }
 
     ensureHeader(table);
 
     const rows = table.querySelectorAll("tbody tr");
-    log("run rows", rows.length, window.location.pathname);
+    log("rows", rows.length, window.location.pathname);
 
     for (const row of rows) {
       await injectRow(row);
@@ -172,26 +209,26 @@
   }
 
   let timer = null;
-  function scheduleRun(delay) {
+  function schedule(delay) {
     clearTimeout(timer);
     timer = setTimeout(run, delay);
   }
 
-  const observer = new MutationObserver(function (mutations) {
+  const observer = new MutationObserver((mutations) => {
     if (!isTargetPage()) return;
+
     const changed = mutations.some((m) => m.addedNodes && m.addedNodes.length > 0);
     if (changed) {
-      scheduleRun(120);
+      schedule(120);
     }
   });
 
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  window.addEventListener("popstate", function () {
-    scheduleRun(200);
-  });
+  window.addEventListener("popstate", () => schedule(200));
+  window.addEventListener("hashchange", () => schedule(200));
 
-  log("head script loaded", window.location.pathname);
-  scheduleRun(300);
+  log("script loaded", window.location.pathname);
+  schedule(300);
 })();
 </script>
