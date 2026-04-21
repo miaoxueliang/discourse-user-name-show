@@ -1,6 +1,6 @@
 ﻿import { apiInitializer } from "discourse/lib/api";
 import { ajax } from "discourse/lib/ajax";
-import I18n from "I18n";
+import { i18n } from "discourse-i18n";
 
 const LOG_PREFIX = "[eeo-user-name-show]";
 const TARGET_PREFIXES = [
@@ -35,13 +35,29 @@ function isTargetPage() {
 }
 
 function tNameLabel() {
-  const value = I18n.t("user_name_show.name_label");
-  return value || "Name";
+  try {
+    const lang = (document.documentElement.lang || "").toLowerCase();
+    return lang.startsWith("zh") ? "姓名" : "Name";
+  } catch (e) {
+    return "Name";
+  }
 }
 
 function tNoName() {
-  const value = I18n.t("user_name_show.no_name");
-  return value || "(no name)";
+  try {
+    const lang = (document.documentElement.lang || "").toLowerCase();
+    return lang.startsWith("zh") ? "（未设置）" : "(no name)";
+  } catch (e) {
+    return "(no name)";
+  }
+}
+
+function tI18n(key) {
+  try {
+    return i18n(key);
+  } catch (e) {
+    return null;
+  }
 }
 
 function ensureExtraStyles() {
@@ -114,23 +130,26 @@ function ensureNameHeader(listEl) {
 }
 
 function ensureGridColumns(listEl) {
-  const header = listEl.querySelector(".directory-table__column-header-wrapper");
-  if (!header) {
+  // 读取 Discourse 已设定的 grid 模板，在末尾追加一列，而非整体替换
+  const existing = listEl.style.gridTemplateColumns || "";
+  if (!existing) {
+    debugLog("grid template: no existing style, skip");
     return;
   }
 
-  const count = header.children.length;
-  if (!count) {
+  if (existing.indexOf("eeo-added") !== -1) {
+    return; // 已追加过
+  }
+
+  // 追加一列 minmax(120px, 1fr)，并打上标记（写入 dataset 避免字符串污染）
+  if (listEl.dataset.eeoColAdded) {
     return;
   }
 
-  const template =
-    "minmax(min-content, 2fr) repeat(" +
-    Math.max(count - 1, 1) +
-    ", minmax(min-content, 1fr))";
-
-  listEl.style.gridTemplateColumns = template;
-  debugLog("grid template applied:", template);
+  const newTemplate = existing + " minmax(120px, 1fr)";
+  listEl.style.gridTemplateColumns = newTemplate;
+  listEl.dataset.eeoColAdded = "1";
+  debugLog("grid template appended:", newTemplate);
 }
 
 async function fetchNameByUserId(userId) {
