@@ -1,0 +1,9 @@
+{
+  "name": "discourse-user-name-show",
+  "description": "【EEO】后台用户列表页显示用户真实姓名",
+  "component": true,
+  "about_url": "https://github.com/miaoxueliang/discourse-user-name-show",
+  "license_url": "https://opensource.org/licenses/MIT",
+  "theme_version": "1.0.0",
+  "authors": "xueliang.miao@eeoa.com"
+}

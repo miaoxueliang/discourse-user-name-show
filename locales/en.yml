@@ -1,0 +1,6 @@
+en:
+  theme_metadata:
+    description: "【EEO】Show user real name in admin user list pages"
+  user_name_show:
+    name_label: "Name"
+    no_name: "(no name)"

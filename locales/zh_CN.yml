@@ -1,0 +1,6 @@
+zh_CN:
+  theme_metadata:
+    description: "【EEO】在后台用户列表页显示用户真实姓名"
+  user_name_show:
+    name_label: "姓名"
+    no_name: "（未设置）"
